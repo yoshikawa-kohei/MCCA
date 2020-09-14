@@ -4,7 +4,7 @@ Authors: Kohei Yoshikawa and Shuichi Kawano
 # Introduction
 This is an implementation of MCCA in "Multilinear Common Component Analysis via Kronecker Product Representation".
 
-# Usage example: Demonstraition of synthetic dataset
+# Usage example: Demonstration of synthetic dataset
 This is a simple example which shows how to use these codes.
 Please confirm the example file (exe_synthentic_simulation.R).
 
