@@ -9,11 +9,11 @@
 #' @param verbose hoge
 #'
 #' @return a list of controling parameter.
-mcca.control <- function(max.itr=100, tol=1e-6, centering=TRUE, verbose=FALSE){
+mcca.control <- function(max.itr=100, tol=1e-5, centering=TRUE, verbose=FALSE){
   return(list(max.itr=max.itr, tol=tol, centering=centering, verbose=verbose))
 }
 
-#' Multilinear Common Component Analysis (MCCA)
+#' Multilinear Common Component Analysis (CCA)
 #' 
 #' @param tnsr tensor object (dim1, dim2, ..., num of sample, num of group)
 #' @param ranks hoge
@@ -37,8 +37,8 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
   if (sum(ranks <= 0) != 0) {
     stop("ranks must be positive")
   }
-
-
+  
+  
   # get the parameters controling function of mcca to "control"
   message("#[info] Start : Multilinear Common Component Analysis (MCCA)")
   control <- do.call("mcca.control", control)
@@ -54,14 +54,9 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
     tnsr <- mapply(function(tnsr1, tnsr2){return(as.tensor(sweep(tnsr1@data, (1:(num.max.mode-1)), tnsr2@data, "-")))}, tnsr, tnsr.mean)
   }
   
-  # calculate covariance matrix
-  # S.all = [S(group1) , S(group2), ..., S(kronecker product)]
-  # S(group1) = [S(mode1), S(mode2), ...]
-  S.all <- vector("list", num.groups)
-  for (g in 1:num.groups) {
-    S.all[[g]] <- calc.tnsr.covmat(tnsr[[g]])
-  }
-
+  
+  S.all <- lapply(tnsr, calc.tnsr.covmat)
+  
   # store approximate error to "ae.history"
   ae.history <- numeric()
   # loss.history <-  vector("list", num.max.mode-1)
@@ -69,10 +64,30 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
   message("#[info] Initializing...")
   # calc weight
   weight <- array(0, c(num.groups, num.max.mode-1))
-  for (g in 1:num.groups) {
-    for (mode in 1:(num.max.mode-1)) {
-      weight[g, mode] <- sum(eigen(tcrossprod(S.all[[g]]$S[[mode]]), symmetric=TRUE)$values[1:ranks[mode]])
+  l0 <- vector("list", num.max.mode-1)
+  l1 <- vector("list", num.max.mode-1)
+  for (mode in 1:(num.max.mode-1)) {
+    l0[[mode]] <- numeric(num.groups)
+    l1[[mode]] <- numeric(num.groups)
+  }
+  for (mode in 1:(num.max.mode-1)) {
+    for (g in 1:num.groups) {
+      S2.eigen <- eigen(tcrossprod(S.all[[g]]$S[[mode]]), symmetric = TRUE)
+      l0[[mode]][g] <- sum(S2.eigen$values[(ranks[mode]+1):length(S2.eigen$values)])
+      l1[[mode]][g] <- sum(S2.eigen$values[1:(ranks[mode]+1)])
     }
+  }
+  for (mode in 1:(num.max.mode-1)) {
+    # kernlab
+    c <- matrix(rep(0, num.groups))
+    H <- l0[[mode]] %*% t(l0[[mode]])
+    A <- t(matrix(l1[[mode]]))
+    b <- 1
+    l <- matrix(rep(0, num.groups))
+    u <- matrix(rep(100, num.groups))
+    r <- 0
+    quad.fit <- ipop(c,H,A,b,l,u,r)
+    weight[, mode] <- primal(quad.fit)
   }
   
   # calc weight cov mat
@@ -82,12 +97,12 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
   for (mode in 1:(num.max.mode-1)) {
     weighted.covmat <- matrix(0, nrow=tnsr[[1]]@modes[mode], ncol=tnsr[[1]]@modes[mode])
     for (g in 1:num.groups) {
-      weighted.covmat <- weighted.covmat + prod(weight[g,-mode]) * tcrossprod(S.all[[g]]$S[[mode]])
+      weighted.covmat <- weighted.covmat + weight[g, mode] * tcrossprod(S.all[[g]]$S[[mode]])
     }
     V.eig <- eigen(weighted.covmat, symmetric=TRUE)$vectors
     V[[mode]] <- V.eig[, 1:ranks[mode], drop=FALSE]
   }
-
+  
   # Lambda step
   Lambda <- vector("list", num.groups)
   for (g in 1:num.groups) {
@@ -101,15 +116,17 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
   # calculate alpha
   alpha <- numeric(num.max.mode-1)
   if(TRUE){
-  for (mode in 1:(num.max.mode-1)) {
-    weighted.covmat <- matrix(0, nrow=tnsr[[1]]@modes[mode], ncol=tnsr[[1]]@modes[mode])
-    for (g in 1:num.groups) {
-      weighted.covmat <- weighted.covmat + prod(weight[g,-mode]) * tcrossprod(S.all[[g]]$S[[mode]])
+    for (mode in 1:(num.max.mode-1)) {
+      weighted.covmat <- matrix(0, nrow=tnsr[[1]]@modes[mode], ncol=tnsr[[1]]@modes[mode])
+      for (g in 1:num.groups) {
+        weighted.covmat <- weighted.covmat + weight[g, mode] * tcrossprod(S.all[[g]]$S[[mode]])
+      }
+      alpha[mode] <- tr(t(V[[mode]]) %*% weighted.covmat %*% V[[mode]])/tr(weighted.covmat)
     }
-    alpha[mode] <- tr(t(V[[mode]]) %*% weighted.covmat %*% V[[mode]])/tr(weighted.covmat)
+    print(alpha)
   }
-  print(alpha)
-  }
+  
+  
   
   # Local Optimization ------------------------------------------------------
   pb <- progress_bar$new(total = control$max.itr, format = "#[info] Searching optimal parameters... [:bar] in :elapsed", clear = FALSE, width=100)
@@ -132,7 +149,7 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
       V.eig <- eigen(weighted.covmat, symmetric=TRUE)$vectors
       V[[mode]] <- V.eig[, 1:ranks[mode], drop=FALSE]
     }
-
+    
     # Lambda update
     for (g in 1:num.groups) {
       for (mode in 1:(num.max.mode-1)) {
@@ -141,7 +158,8 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
     }
     
     # calculate loss
-    ae.history[itr] <- calc.ae.mcca(S.all, V, Lambda)
+    # ae.history[itr] <- calc.ae.mcca(S.all, V, Lambda)
+    ae.history[itr] <- calc.obj.val(Lambda)
     
     
     if (control$verbose) {
@@ -154,20 +172,14 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
     }
   }
   
-
-  
   # tnsr.core is the dimensionally reduced tensor
   # tnsr.est is low-rank approximate tensor
   tnsr.core <- lapply(tnsr, function(tnsr){return(ttl(tnsr, lapply(V, t), ms=(1:(num.max.mode-1))))})
   tnsr.est <- lapply(tnsr.core, function(tnsr){return(ttl(tnsr, V, ms=(1:(num.max.mode-1))))})
   
-  if(control$centering){
-    tnsr.reconst <- mapply(function(tnsr1, tnsr2){return(as.tensor(sweep(tnsr1@data, (1:(num.max.mode-1)), tnsr2@data, "+")))}, tnsr.est, tnsr.mean)
-  }else{
-    tnsr.reconst <- tnsr.est
-  }
+  tnsr.reconst <- mapply(function(tnsr1, tnsr2){return(as.tensor(sweep(tnsr1@data, (1:(num.max.mode-1)), tnsr2@data, "+")))}, tnsr.est, tnsr.mean)
   tnsr.reconst.combined <- as.tensor(abind(lapply(tnsr.reconst, function(x){return(x@data)}), along=num.max.mode))
-
+  
   # calculate original tnsor norm
   tnsr.combined <- as.tensor(abind(lapply(tnsr.org, function(x){return(x@data)}), along=num.max.mode))
   
@@ -178,7 +190,7 @@ mcca <- function(tnsr, ranks = NULL, control=list()){
   
   message("#[info] Finish!")
   # return values
-  return(list(core=tnsr.core, est=tnsr.est, tnsr.mean=tnsr.mean, tnsr.reconst=tnsr.reconst, V=V, Lambda=Lambda, ae.history=ae.history, alpha=alpha, reconst.rate=reconst.rate))
+  return(list(core=tnsr.core, est=tnsr.est, tnsr.mean=tnsr.mean, tnsr.reconst=tnsr.reconst, V=V, Lambda=Lambda, ae.history=ae.history, alpha=alpha, reconst.rate=reconst.rate, lp.fit=quad.fit))
   
 }
 
@@ -219,7 +231,7 @@ calc.tnsr.covmat <- function(tnsr){
 }
 
 
-#' Prot
+#' Plot
 #' 
 #' @param cca hoge
 mcca.plot <- function(cca){
@@ -259,4 +271,10 @@ calc.ae.mcca <- function(S, V, Lambda){
   }
   ARE <- numerator/denominator
   return(ARE)
+}
+
+
+calc.obj.val <- function(Lambda){
+  val <- sum(sapply(Lambda, function(x){prod(sapply(x, function(x){tr(x %*% t(x))}))}))
+  return(val)
 }
